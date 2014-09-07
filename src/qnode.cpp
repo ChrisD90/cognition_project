@@ -2,18 +2,72 @@
 
 namespace cognition_project {
 
+
+
 /*
  *
  */
-QNode::QNode(int argc, char** argv) :
-		init_argc(argc), init_argv(argv) {
+QNode::QNode(int argc, char** argv) {
 
+	initAddresses();
+	initMessages();
 	stopIt = false;
-	sock = -1;
-	sockbind = -1;
-	sockopt = -1;
-	sensorAddrLength = 0;
-	packetSize = 0;
+
+
+
+	FrameAddress a;
+	FrameAddress b;
+	FrameAddress c;
+	FrameAddress d;
+
+	a.frame = 4;
+	a.address = QString("A");
+	b.frame = 2;
+	b.address = QString("B");
+	c.frame = 1;
+	c.address = QString("C");
+	d.frame = 3;
+	d.address = QString("D");
+
+	frameAddressList.append(a);
+	frameAddressList.append(b);
+	frameAddressList.append(c);
+	frameAddressList.append(d);
+
+	QSettings settings(QString("TU Darmstadt"), QString("cognition_project"));
+
+	/*
+	settings.beginGroup("frame_address");
+		    settings.remove("");
+		    settings.endGroup();
+		    */
+
+
+	settings.beginWriteArray("frame_address");
+
+	for (int i = 0; i < frameAddressList.size(); ++i) {
+	    settings.setArrayIndex(i);
+	    settings.setValue("frame", frameAddressList.at(i).frame);
+	    settings.setValue("address", frameAddressList.at(i).address);
+	}
+	settings.endArray();
+
+
+	int size = settings.beginReadArray("frame_address");
+	for (int i = 0; i < size; ++i) {
+	    settings.setArrayIndex(i);
+	    FrameAddress fa;
+	    fa.frame = settings.value("frame").toInt();
+	    fa.address = settings.value("address").toString();
+	    frameAddressList.append(fa);
+	}
+	settings.endArray();
+
+	for (int i = 0; i < frameAddressList.size(); ++i) {
+		log(Info, frameAddressList.at(i).address.toStdString());
+	}
+
+
 
 }
 
@@ -28,101 +82,36 @@ QNode::~QNode() {
 	wait();
 }
 
-/*
- *
- */
-bool QNode::initNode(const std::string &masterURL, const std::string &hostURL) {
-
-	if (ros::isStarted()) {
-
-		log(Info, std::string("Node already running"));
-		return true;
-	}
-
-	std::map<std::string, std::string> remappings;
-	remappings["__master"] = masterURL;
-	remappings["__hostname"] = hostURL;
-
-	ros::init(remappings, "qnode");
-
-	if (!ros::master::check()) {
-
-		log(Error, std::string("ROS Master not found"));
-		return false;
-	}
-
-	if(!initSocket()) {
-		return false;
-	}
-
-	ros::start();
-	ros::NodeHandle nh;
-
-	initMessages();
-
-	log(Info, std::string("Node was started"));
-	return true;
-}
 
 /*
  *
  */
-bool QNode::initSocket() {
+void QNode::initAddresses() {
 
-	if(sock >= 0 && sockbind >= 0 && sockopt >= 0) {
-		return true;
-	}
-
-	//create socket
-	sock = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sock < 0) {
-		log(Error, std::string("Creation of socket has failed"));
-		return false;
-	} else {
-		log(Info, std::string("Creation of socket was successful"));
-	}
+	sock = -1;
+	sockbind = -1;
+	sockopt = -1;
+	sensorAddrLength = 0;
+	packetSize = 0;
 
 	//set socket address to 0
 	memset((char *) &socketAddr, 0, sizeof(socketAddr));
+
+	//set sensor address to 0
+	memset((char *) &sensorAddr, 0, sizeof(sensorAddr));
 
 	//fill socket address
 	socketAddr.sin_family = AF_INET;
 	socketAddr.sin_addr.s_addr = htonl(INADDR_ANY);
 	socketAddr.sin_port = htons(PORT);
 
-	//bind socket to port
-	sockbind = bind(sock, (struct sockaddr *) &socketAddr, sizeof(socketAddr));
-	if (sockbind < 0) {
-		log(Error, std::string("Binding of socket has failed"));
-		return false;
-	} else {
-		log(Info, std::string("Binding of socket was successful"));
-	}
-
-	//set socket option (allow other sockets to bind to this port)
-	int optval = 1;
-	sockopt = setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &optval,
-			sizeof optval);
-	if (sockopt < 0) {
-		log(Error, std::string("Setting option of socket has failed"));
-		return false;
-	} else {
-		log(Info, std::string("Setting option of socket was successful"));
-	}
-
 	//sensor address length
 	sensorAddrLength = sizeof(sensorAddr);
-
-	//set sensor address to 0
-	memset((char *) &sensorAddr, 0, sizeof(sensorAddr));
-
-	return true;
 }
 
 /*
  *
  */
-
 void QNode::initMessages() {
 
 	//URDF Joints
@@ -181,43 +170,155 @@ void QNode::initMessages() {
 		rotation[i] = tf::Quaternion(0, 0, 0, sqrt(1.0));
 		rotation[i].normalize();
 
-		//initial time
-		ros::Time initialTime = ros::Time::now();
-
 		//initialize TF messages
 		tfMsgs[i].frame_id_ = parent[i];
 		tfMsgs[i].child_frame_id_ = child[i];
-		tfMsgs[i].stamp_ = initialTime;
 		tfMsgs[i].setOrigin(origin[i]);
 		tfMsgs[i].setRotation(rotation[i]);
 	}
 }
 
+//**************************************************************************************
+
 /*
  *
  */
+bool QNode::receiveReady() {
 
-void QNode::startThread() {
-	start();
-	log(Info, std::string("Thread started"));
-	stopIt = false;
+	if(!nodeReady()) {
+		return false;
+	}
+	if (!socketReady()) {
+		return false;
+	}
+	return true;
+}
 
+/*
+ *
+ */
+bool QNode::nodeReady() {
+
+	if(ros::isStarted()) {
+		log(Info, std::string("Node is ready"));
+		return true;
+	}
+
+	std::map<std::string, std::string> remappings;
+	remappings["__hostname"] = node_host_ip;
+	remappings["__master"] = node_master_uri;
+
+	ros::init(remappings, "qnode");
+
+	if (!ros::master::check()) {
+		log(Error, std::string("Master communication failed!"));
+		log(Info, std::string("Restart with correct setup."));
+		return false;
+	}
+	ros::start();
+	ros::NodeHandle nh;
+
+	log(Info, std::string("Node is ready"));
+	return true;
+}
+
+/*
+ *
+ */
+bool QNode::socketReady() {
+
+	if(!socketCreation()) {
+		log(Error, std::string("Socket creation failed!"));
+		return false;
+	}
+	if(!socketOption()) {
+		log(Error, std::string("Socket option setting failed!"));
+		return false;
+	}
+	if(!socketBinding()) {
+		log(Error, std::string("Socket binding failed!"));
+		return false;
+	}
+	log(Info, std::string("Socket is ready"));
+	return true;
 }
 
 
 /*
  *
  */
+bool QNode::socketCreation() {
 
+	if(!(sock < 0)) {
+		return true;
+	}
+
+	//create socket
+	sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sock < 0) {
+		return false;
+	}
+	return true;
+}
+
+/*
+ *
+ */
+bool QNode::socketOption() {
+
+	if(!(sockopt< 0)) {
+		return true;
+	}
+
+	//set socket option (allow other sockets to bind to this port)
+	int optval = 1;
+	sockopt = setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &optval,
+			sizeof optval);
+	if (sockopt < 0) {
+		return false;
+	}
+	return true;
+}
+
+/*
+ *
+ */
+bool QNode::socketBinding() {
+
+	if(!(sockbind < 0)) {
+		return true;
+	}
+
+	//bind socket to port
+	sockbind = bind(sock, (struct sockaddr *) &socketAddr, sizeof(socketAddr));
+
+	if (sockbind < 0) {
+		return false;
+	}
+	return true;
+}
+
+//**************************************************************************************
+
+/*
+ *
+ */
+void QNode::startThread() {
+	stopIt = false;
+	start();
+	log(Info, std::string("Started to receive"));
+}
+
+/*
+ *
+ */
 void QNode::stopThread() {
 	stopIt = true;
 }
 
-
 /*
  *
  */
-
 void QNode::run() {
 
 	tf::TransformBroadcaster tfPublisher;
@@ -261,9 +362,14 @@ void QNode::run() {
 			}
 		}
 	}
-	log(Info, std::string("Thread stopped"));
+	log(Info, std::string("Stopped to receive"));
 }
 
+//**************************************************************************************
+
+/*
+ *
+ */
 void QNode::log(const LogLevel &level, const std::string &msg) {
 	logging_model.insertRows(logging_model.rowCount(), 1);
 	std::stringstream logging_model_msg;
