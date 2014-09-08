@@ -6,10 +6,10 @@
 #include <tf/tf.h>
 #include <tf/transform_broadcaster.h>
 #include <QThread>
-#include <QList>
 #include <QString>
-#include <QSettings>
+#include <QStringList>
 #include <QStringListModel>
+#include <QSettings>
 #include <sstream>
 #include <string>
 
@@ -18,13 +18,12 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#define NO_IP "000.000.000.000"
 #define PORT 5050
 #define SIZE 14
-
-struct FrameAddress {
-	int frame;
-	QString address;
-};
+#define SEC 1000000000
+#define HALF_SEC 500000000
+#define MILLI_SEC 1000000
 
 struct SensorData {
 	uint32_t timestamp;
@@ -39,6 +38,10 @@ class QNode : public QThread {
 public:
 	QNode(int argc, char** argv);
 	virtual ~QNode();
+
+	void resetAddresses();
+	void readAddresses();
+	void writeAddresses();
 
 	void initMessages();
 	void initAddresses();
@@ -65,7 +68,7 @@ public:
 
 	void log(const LogLevel &level, const std::string &msg);
 	QStringListModel* loggingModel() { return &logging_model; }
-	QList<FrameAddress>* getFrameAddressList() { return &frameAddressList; }
+	QStringList* getAddressList() { return &addressList; }
 
 
 Q_SIGNALS:
@@ -73,7 +76,7 @@ Q_SIGNALS:
 
 private:
 
-	QList<FrameAddress> frameAddressList;
+	QStringList addressList;
 	QStringListModel logging_model;
 
 	bool stopIt;
@@ -83,6 +86,15 @@ private:
 	tf::Vector3 origin[SIZE];
 	tf::Quaternion rotation[SIZE];
 	tf::StampedTransform tfMsgs[SIZE];
+
+	//to determine the last time a packets was received for a frame
+	ros::Time tfLastUpdate[SIZE];
+
+	//time difference between now and the last time a packet was received for a frame in seconds
+	int tfAgeInSec[SIZE];
+
+	//time difference between now and the last time a packet was received for a frame in nanoseconds
+	int tfAgeInNSec[SIZE];
 
 
 	int sock; //socket

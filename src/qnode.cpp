@@ -10,64 +10,11 @@ namespace cognition_project {
 QNode::QNode(int argc, char** argv) {
 
 	initAddresses();
-	initMessages();
 	stopIt = false;
 
-
-
-	FrameAddress a;
-	FrameAddress b;
-	FrameAddress c;
-	FrameAddress d;
-
-	a.frame = 4;
-	a.address = QString("A");
-	b.frame = 2;
-	b.address = QString("B");
-	c.frame = 1;
-	c.address = QString("C");
-	d.frame = 3;
-	d.address = QString("D");
-
-	frameAddressList.append(a);
-	frameAddressList.append(b);
-	frameAddressList.append(c);
-	frameAddressList.append(d);
-
-	QSettings settings(QString("TU Darmstadt"), QString("cognition_project"));
-
-	/*
-	settings.beginGroup("frame_address");
-		    settings.remove("");
-		    settings.endGroup();
-		    */
-
-
-	settings.beginWriteArray("frame_address");
-
-	for (int i = 0; i < frameAddressList.size(); ++i) {
-	    settings.setArrayIndex(i);
-	    settings.setValue("frame", frameAddressList.at(i).frame);
-	    settings.setValue("address", frameAddressList.at(i).address);
-	}
-	settings.endArray();
-
-
-	int size = settings.beginReadArray("frame_address");
-	for (int i = 0; i < size; ++i) {
-	    settings.setArrayIndex(i);
-	    FrameAddress fa;
-	    fa.frame = settings.value("frame").toInt();
-	    fa.address = settings.value("address").toString();
-	    frameAddressList.append(fa);
-	}
-	settings.endArray();
-
-	for (int i = 0; i < frameAddressList.size(); ++i) {
-		log(Info, frameAddressList.at(i).address.toStdString());
-	}
-
-
+	//resetAddresses();
+	readAddresses();
+	//writeAddresses();
 
 }
 
@@ -82,6 +29,56 @@ QNode::~QNode() {
 	wait();
 }
 
+//**************************************************************************************
+
+/*
+ *
+ */
+void QNode::resetAddresses() {
+
+	QSettings settings(QString("TU Darmstadt"), QString("cognition_project"));
+	settings.beginGroup("addressList");
+	settings.remove("");
+	settings.endGroup();
+}
+
+/*
+ *
+ */
+void QNode::readAddresses() {
+
+	QSettings settings(QString("TU Darmstadt"), QString("cognition_project"));
+	addressList.clear();
+	int size = settings.beginReadArray("addressList");
+	if (size == SIZE) {
+		for (int i = 0; i < size; ++i) {
+			settings.setArrayIndex(i);
+			addressList.append(settings.value("address", NO_IP).toString());
+		}
+		settings.endArray();
+	} else {
+		settings.endArray();
+		for (int i = 0; i < SIZE; ++i) {
+			addressList.append(NO_IP);
+		}
+	}
+}
+
+/*
+ *
+ */
+void QNode::writeAddresses() {
+
+	QSettings settings(QString("TU Darmstadt"), QString("cognition_project"));
+	settings.beginWriteArray("addressList");
+	for (int i = 0; i < addressList.size(); ++i) {
+		settings.setArrayIndex(i);
+		settings.setValue("address", addressList.at(i));
+	}
+	settings.endArray();
+}
+
+//**************************************************************************************
 
 /*
  *
@@ -173,8 +170,11 @@ void QNode::initMessages() {
 		//initialize TF messages
 		tfMsgs[i].frame_id_ = parent[i];
 		tfMsgs[i].child_frame_id_ = child[i];
+		tfMsgs[i].stamp_ = ros::Time::now();
 		tfMsgs[i].setOrigin(origin[i]);
 		tfMsgs[i].setRotation(rotation[i]);
+
+		tfLastUpdate[i] = tfMsgs[i].stamp_;
 	}
 }
 
@@ -323,8 +323,13 @@ void QNode::run() {
 
 	tf::TransformBroadcaster tfPublisher;
 
+	initMessages();
+
 	ros::Time start_time = ros::Time::now();
 	ros::Duration timeout(2.0); // Timeout of 2 seconds
+
+	int frame;
+	QString str;
 
 	//receive sensor packets while ROS is ok
 	while (ros::ok() && !stopIt) {
@@ -336,28 +341,72 @@ void QNode::run() {
 		//if bytes were received
 		if (packetSize > 0) {
 
+			str = QString(inet_ntoa(sensorAddr.sin_addr));
 
-			tf::Quaternion original(packetData.q1, packetData.q2, packetData.q3,
-					packetData.q0);
-			original.normalize();
+			frame = addressList.indexOf(str, 0);
 
-			//tfMsgs[2].setRotation(original);
+			if (frame < 0) {
 
-			std::stringstream ss;
+				frame = addressList.indexOf(NO_IP, 0);
+				addressList.replace(frame, str);
 
-			ss << original.getX() << original.getY();
-
-			if ((ros::Time::now() - start_time) >= timeout) {
-				log(Info, std::string(inet_ntoa(sensorAddr.sin_addr)));
-				log(Info, ss.str());
-				start_time = ros::Time::now();
+				std::stringstream ss;
+				ss << frame;
+				log(Data, "Assigned frame "+ss.str()+" with address "+str.toStdString());
 			}
 
+			if(frame >= 0 && frame < SIZE) {
 
-			for (unsigned int i = 0; i < SIZE; i++) {
+				tf::Quaternion original(packetData.q1, packetData.q2, packetData.q3,
+						packetData.q0);
+				original.normalize();
 
-				tfMsgs[i].stamp_ = ros::Time::now();
-				tfPublisher.sendTransform(tfMsgs[i]);
+				tfMsgs[frame].setRotation(original);
+
+				for (int i = 0; i < SIZE; i++) {
+
+					tfMsgs[i].stamp_ = ros::Time::now();
+					tfPublisher.sendTransform(tfMsgs[i]);
+
+
+					//update last update time for current frame
+					if (i == frame) {
+
+						tfLastUpdate[frame] = tfMsgs[frame].stamp_;
+					}
+
+					//*********************************************************************
+
+					//update data age (seconds)
+					tfAgeInSec[i] = tfMsgs[i].stamp_.sec
+							- tfLastUpdate[i].sec;
+
+					//update data age (nanoseconds)
+					if (tfMsgs[i].stamp_.sec
+							> tfLastUpdate[i].sec) {
+						tfAgeInNSec[i] =
+								tfMsgs[i].stamp_.nsec
+										+ (SEC - tfLastUpdate[i].nsec);
+					} else {
+						tfAgeInNSec[i] =
+								tfMsgs[i].stamp_.nsec
+										- tfLastUpdate[i].nsec;
+					}
+
+
+				}
+
+				std::stringstream age0;
+				age0 << tfAgeInSec[0] << "." << tfAgeInNSec[0];
+
+				std::stringstream age5;
+				age5 << tfAgeInSec[5] << "." << tfAgeInNSec[5];
+
+				if ((ros::Time::now() - start_time) >= timeout) {
+					log(Info, age0.str());
+					log(Info, age5.str());
+					start_time = ros::Time::now();
+				}
 
 			}
 		}
